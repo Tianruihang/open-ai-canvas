@@ -2,8 +2,7 @@ package providercatalog
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,41 +118,23 @@ func TestPricingAppliesMarkupWithCeil(t *testing.T) {
 	}
 }
 
-func TestSourceFallsBackToPersistedSnapshot(t *testing.T) {
-	fail := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if fail {
-			http.Error(w, "down", http.StatusBadGateway)
-			return
-		}
-		if r.Header.Get("If-None-Match") == `"v1"` {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("ETag", `"v1"`)
-		_, _ = w.Write([]byte(sampleCatalog))
-	}))
-	defer server.Close()
+func TestSourceLoadsLocalFileAndKeepsSnapshotOnFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalog.json")
+	if err := os.WriteFile(path, []byte(sampleCatalog), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2025, 6, 15, 0, 0, 0, 0, time.UTC)
-	clock := func() time.Time { return now }
-	source := NewSourceForTest(server.URL, "", server.Client(), path, clock)
+	source := NewSourceForTest(path, "", func() time.Time { return now })
 	snapshot := source.Refresh(context.Background())
-	if snapshot.State != SourceLive || snapshot.Catalog == nil || snapshot.ETag != `"v1"` {
-		t.Fatalf("first refresh = %#v", snapshot)
+	if snapshot.State != SourceLive || snapshot.Catalog == nil || len(snapshot.Catalog.Providers) != 2 {
+		t.Fatalf("first load = %#v", snapshot)
 	}
-	if again := source.Refresh(context.Background()); again.State != SourceLive || again.Catalog == nil {
-		t.Fatalf("304 refresh = %#v", again)
+	if err := os.WriteFile(path, []byte(`{"schemaVersion":2}`), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	fail = true
-	restarted := NewSourceForTest(server.URL, "", server.Client(), path, clock)
-	cached := restarted.Refresh(context.Background())
-	if cached.State != SourceCache || cached.Catalog == nil || !strings.Contains(cached.LastError, "502") {
+	cached := source.Refresh(context.Background())
+	if cached.State != SourceCache || cached.Catalog == nil || !strings.Contains(cached.LastError, "schemaVersion") {
 		t.Fatalf("fallback = %#v", cached)
-	}
-	empty := NewSourceForTest(server.URL, "", server.Client(), filepath.Join(t.TempDir(), "none.json"), clock)
-	if got := empty.Refresh(context.Background()); got.State != SourceUnavailable || got.Catalog != nil {
-		t.Fatalf("no snapshot = %#v", got)
 	}
 }
 

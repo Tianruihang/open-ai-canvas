@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,15 +41,15 @@ func newProviderCatalogTestService(t *testing.T) (*Service, func()) {
 	t.Helper()
 	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	upstream := httptest.NewTLSServer(http.NotFoundHandler())
-	catalogServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(catalogTestBody(upstream.URL + "/v1")))
-	}))
 	svc, _ := newChannelModelTestService(t)
 	svc.dataDir = t.TempDir()
+	catalogPath := filepath.Join(svc.dataDir, "catalog.json")
+	if err := os.WriteFile(catalogPath, []byte(catalogTestBody(upstream.URL+"/v1")), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2025, 6, 15, 0, 0, 0, 0, time.UTC)
-	svc.providerCatalog = providercatalog.NewSourceForTest(catalogServer.URL, "", catalogServer.Client(), filepath.Join(svc.dataDir, "catalog.json"), func() time.Time { return now })
-	return svc, func() { catalogServer.Close(); upstream.Close() }
+	svc.providerCatalog = providercatalog.NewSourceForTest(catalogPath, "", func() time.Time { return now })
+	return svc, func() { upstream.Close() }
 }
 
 func TestAdminProviderCatalogFiltersExpiredAndMarksUnsupported(t *testing.T) {
